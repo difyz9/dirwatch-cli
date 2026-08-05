@@ -34,6 +34,61 @@ func TestExplicitMissingConfigFails(t *testing.T) {
 	}
 }
 
+func TestCobraHelpDoesNotRun(t *testing.T) {
+	var output bytes.Buffer
+	_, err := parseFlags([]string{"--help"}, &output)
+	if !errors.Is(err, errHelp) {
+		t.Fatalf("help error = %v", err)
+	}
+	if !bytes.Contains(output.Bytes(), []byte("Watch directories")) || !bytes.Contains(output.Bytes(), []byte("--archive-dir")) {
+		t.Fatalf("unexpected help output: %s", output.String())
+	}
+}
+
+func TestCobraRejectsPositionalArguments(t *testing.T) {
+	_, err := parseFlags([]string{"unexpected"}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected positional argument error")
+	}
+}
+
+func TestInitCommandCreatesConfigAndProtectsExisting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".config", "dirwatch-cli", "dirwatch.yaml")
+	if err := initConfig(path, false); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte("watch: /data/incoming")) || !bytes.Contains(raw, []byte("archive_dir:")) {
+		t.Fatalf("unexpected generated config: %s", raw)
+	}
+	if err := initConfig(path, false); err == nil {
+		t.Fatal("expected existing config error")
+	}
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := initConfig(path, true); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(path)
+	if bytes.Equal(raw, []byte("old")) {
+		t.Fatal("--force did not overwrite config")
+	}
+}
+
+func TestCobraInitAction(t *testing.T) {
+	o, err := parseFlags([]string{"init", "--force"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.action != "init" || !o.initForce || filepath.Base(o.configPath) != "dirwatch.yaml" {
+		t.Fatalf("options = %+v", o)
+	}
+}
+
 func newTestScanner(t *testing.T, dir string, inactive time.Duration, now *time.Time) *scanner {
 	t.Helper()
 	db, err := openCheckpoint(filepath.Join(t.TempDir(), "state.db"))

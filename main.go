@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -18,13 +17,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
 	bolt "go.etcd.io/bbolt"
 	"gopkg.in/yaml.v3"
 )
 
 const stateBucket = "spool_state"
 
+var errHelp = errors.New("help requested")
+
 type options struct {
+	action        string
+	initForce     bool
 	configPath    string
 	watchDir      string
 	archiveDir    string
@@ -78,18 +82,18 @@ func defaultConfigPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".config", "light-spool-cli", "config.yaml"), nil
+	return filepath.Join(home, ".config", "dirwatch-cli", "dirwatch.yaml"), nil
 }
 
 func configArgument(args []string, fallback string) (string, bool, error) {
 	for i, arg := range args {
-		if arg == "--config" || arg == "-config" {
+		if arg == "--config" {
 			if i+1 >= len(args) {
 				return "", true, errors.New("--config requires a path")
 			}
 			return args[i+1], true, nil
 		}
-		if strings.HasPrefix(arg, "--config=") || strings.HasPrefix(arg, "-config=") {
+		if strings.HasPrefix(arg, "--config=") {
 			return strings.SplitN(arg, "=", 2)[1], true, nil
 		}
 	}
@@ -147,43 +151,116 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	}
 	o := options{
 		watchDir: "/data/incoming", scanInterval: 2 * time.Second, inactive: 3 * time.Second,
-		checkpoint: "./spool.db", includeSource: `\.csv$|\.jpg$|\.mp4$`, excludeSource: `\.tmp$|\.part$`,
+		checkpoint: "./dirwatch.db", includeSource: `\.csv$|\.jpg$|\.mp4$`, excludeSource: `\.tmp$|\.part$`,
 	}
 	configPath, explicitConfig, err := configArgument(args, defaultPath)
 	if err != nil {
 		return o, err
 	}
 	o.configPath = configPath
-	if err := loadYAMLConfig(configPath, explicitConfig, &o); err != nil {
-		return o, err
+	isInit := len(args) > 0 && args[0] == "init"
+	if !isInit {
+		if err := loadYAMLConfig(configPath, explicitConfig, &o); err != nil {
+			return o, err
+		}
 	}
 
-	fs := flag.NewFlagSet("light-spool-cli", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.StringVar(&o.configPath, "config", o.configPath, "YAML config path")
-	fs.StringVar(&o.watchDir, "watch", o.watchDir, "directory to monitor")
-	fs.StringVar(&o.archiveDir, "archive-dir", o.archiveDir, "move emitted files here, preserving subdirectories (empty disables archiving)")
-	fs.DurationVar(&o.scanInterval, "scan-interval", o.scanInterval, "polling interval")
-	fs.DurationVar(&o.inactive, "inactive", o.inactive, "required unchanged duration")
-	fs.StringVar(&o.checkpoint, "checkpoint", o.checkpoint, "bbolt checkpoint path")
-	fs.StringVar(&o.includeSource, "include", o.includeSource, "include regular expression")
-	fs.StringVar(&o.excludeSource, "exclude", o.excludeSource, "exclude regular expression (empty disables it)")
-	if err := fs.Parse(args); err != nil {
+	executed := false
+	cmd := &cobra.Command{
+		Use:           "dirwatch-cli",
+		Short:         "Watch directories and emit metadata for completed files",
+		Version:       "dev",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Example: `  dirwatch-cli
+  dirwatch-cli --watch /data/incoming --archive-dir /data/archive
+  dirwatch-cli --config ~/.config/dirwatch-cli/dirwatch.yaml`,
+		RunE: func(cmd *cobra.Command, positional []string) error {
+			executed = true
+			o.action = "watch"
+			if o.scanInterval <= 0 {
+				return errors.New("--scan-interval must be greater than zero")
+			}
+			if o.inactive < 0 {
+				return errors.New("--inactive cannot be negative")
+			}
+			if o.watchDir == "" || o.checkpoint == "" {
+				return errors.New("--watch and --checkpoint cannot be empty")
+			}
+			return nil
+		},
+	}
+	cmd.CompletionOptions.DisableDefaultCmd = true
+	initCmd := &cobra.Command{
+		Use:           "init",
+		Short:         "Create the default YAML configuration",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Run: func(cmd *cobra.Command, positional []string) {
+			executed = true
+			o.action = "init"
+		},
+	}
+	initCmd.Flags().BoolVarP(&o.initForce, "force", "f", false, "overwrite an existing configuration")
+	cmd.AddCommand(initCmd)
+	cmd.SetOut(stderr)
+	cmd.SetErr(stderr)
+	cmd.SetArgs(args)
+	flags := cmd.Flags()
+	flags.StringVar(&o.configPath, "config", o.configPath, "YAML config path")
+	flags.StringVar(&o.watchDir, "watch", o.watchDir, "directory to monitor")
+	flags.StringVar(&o.archiveDir, "archive-dir", o.archiveDir, "move emitted files here, preserving subdirectories")
+	flags.DurationVar(&o.scanInterval, "scan-interval", o.scanInterval, "polling interval")
+	flags.DurationVar(&o.inactive, "inactive", o.inactive, "required unchanged duration")
+	flags.StringVar(&o.checkpoint, "checkpoint", o.checkpoint, "bbolt checkpoint path")
+	flags.StringVar(&o.includeSource, "include", o.includeSource, "include regular expression; empty includes all")
+	flags.StringVar(&o.excludeSource, "exclude", o.excludeSource, "exclude regular expression; empty disables it")
+	if err := cmd.Execute(); err != nil {
 		return o, err
 	}
-	if fs.NArg() != 0 {
-		return o, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
-	}
-	if o.scanInterval <= 0 {
-		return o, errors.New("--scan-interval must be greater than zero")
-	}
-	if o.inactive < 0 {
-		return o, errors.New("--inactive cannot be negative")
-	}
-	if o.watchDir == "" || o.checkpoint == "" {
-		return o, errors.New("--watch and --checkpoint cannot be empty")
+	if !executed {
+		return o, errHelp
 	}
 	return o, nil
+}
+
+const defaultConfig = `# dirwatch-cli configuration
+watch: /data/incoming
+archive_dir: ""
+scan_interval: 2s
+inactive: 3s
+checkpoint: ./dirwatch.db
+include: '\.csv$|\.jpg$|\.mp4$'
+exclude: '\.tmp$|\.part$'
+`
+
+func initConfig(path string, force bool) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	flags := os.O_WRONLY | os.O_CREATE
+	if force {
+		flags |= os.O_TRUNC
+	} else {
+		flags |= os.O_EXCL
+	}
+	file, err := os.OpenFile(path, flags, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("config already exists: %s (use --force to overwrite)", path)
+		}
+		return fmt.Errorf("create config %q: %w", path, err)
+	}
+	if _, err := io.WriteString(file, defaultConfig); err != nil {
+		file.Close()
+		return fmt.Errorf("write config %q: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close config %q: %w", path, err)
+	}
+	return nil
 }
 
 func compileOptional(pattern string) (*regexp.Regexp, error) {
@@ -362,6 +439,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if o.action == "init" {
+		if err := initConfig(o.configPath, o.initForce); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "created %s\n", o.configPath)
+		return nil
+	}
 	include, err := compileOptional(o.includeSource)
 	if err != nil {
 		return fmt.Errorf("invalid --include regex: %w", err)
@@ -399,7 +483,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	defer db.Close()
 
 	logger := log.New(stderr, "", log.LstdFlags)
-	logger.Printf("light-spool-cli start watch=%s scan=%s inactive=%s os=%s", o.watchDir, o.scanInterval, o.inactive, runtime.GOOS)
+	logger.Printf("dirwatch-cli start watch=%s scan=%s inactive=%s os=%s", o.watchDir, o.scanInterval, o.inactive, runtime.GOOS)
 	s := scanner{dir: o.watchDir, archive: o.archiveDir, inactive: o.inactive, include: include, exclude: exclude, db: db, now: time.Now}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetEscapeHTML(false)
@@ -427,7 +511,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Print("light-spool-cli stopped")
+			logger.Print("dirwatch-cli stopped")
 			return nil
 		case <-ticker.C:
 			scan()
@@ -439,10 +523,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+		if errors.Is(err, errHelp) {
 			return
 		}
-		fmt.Fprintln(os.Stderr, "light-spool-cli:", err)
+		fmt.Fprintln(os.Stderr, "dirwatch-cli:", err)
 		os.Exit(1)
 	}
 }

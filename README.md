@@ -1,23 +1,33 @@
-# light-spool-cli
+# dirwatch-cli
 
 一个轻量、单二进制的目录文件采集器。它只通过 `stat` 读取文件元数据，**绝不读取文件内容**；业务 JSON 写到 stdout，运行日志写到 stderr。
+
+CLI 基于 [Cobra](https://github.com/spf13/cobra)，支持标准帮助、版本信息、参数校验和清晰的错误提示。
 
 ## 构建
 
 ```bash
-go build -o light-spool-cli .
+go build -o dirwatch-cli .
 ```
 
 ## 使用
 
-默认读取用户目录下的 `~/.config/light-spool-cli/config.yaml`。配置文件不存在时使用内置默认值：
+默认读取用户目录下的 `~/.config/dirwatch-cli/dirwatch.yaml`。可以通过 init 命令生成配置：
+
+```bash
+dirwatch-cli init
+```
+
+已有配置默认不会覆盖；需要重新生成时显式执行 `dirwatch-cli init --force`。
+
+生成的配置内容如下：
 
 ```yaml
 watch: /data/incoming
 archive_dir: /data/archive
 scan_interval: 2s
 inactive: 3s
-checkpoint: ./spool.db
+checkpoint: ./dirwatch.db
 include: '\.csv$|\.jpg$|\.mp4$'
 exclude: '\.tmp$|\.part$'
 ```
@@ -25,21 +35,21 @@ exclude: '\.tmp$|\.part$'
 配置完成后可直接运行：
 
 ```bash
-light-spool-cli
+dirwatch-cli
 ```
 
-也可以通过 `--config /path/to/config.yaml` 指定其他配置。命令行参数优先级高于 YAML，例如：
+配置文件不存在时使用内置默认值。也可以通过 `--config /path/to/config.yaml` 指定其他配置。命令行参数优先级高于 YAML，例如：
 
 ```bash
-./light-spool-cli \
-  --config ~/.config/light-spool-cli/config.yaml \
+./dirwatch-cli \
+  --config ~/.config/dirwatch-cli/dirwatch.yaml \
   --watch /data/incoming \
   --scan-interval 2s \
   --inactive 3s \
   --archive-dir /data/archive \
   --include '\.csv$|\.jpg$|\.mp4$' \
   --exclude '\.tmp$|\.part$' \
-  --checkpoint ./spool.db
+  --checkpoint ./dirwatch.db
 ```
 
 程序启动时立即递归扫描监控目录及其所有子目录，之后按 `--scan-interval` 轮询，因此适用于 inotify 不可靠的 NFS。文件的 inode、大小或 mtime 发生变化时会重新开始静止计时；连续静止达到 `--inactive` 后输出一次。文件再次变化后可以再次输出。重命名后旧路径状态会被清理，新路径作为新文件观察；删除文件对应的 checkpoint 也会自动清理。
@@ -55,7 +65,7 @@ light-spool-cli
 可直接管道给下游：
 
 ```bash
-./light-spool-cli 2>spool.log | python3 consumer.py
+./dirwatch-cli 2>dirwatch.log | python3 consumer.py
 ```
 
 ## 行为说明
