@@ -5,3 +5,7 @@ scan_interval: 2s
 inactive: 3s
 include: '\.csv$|\.jpg$|\.mp4$'
 exclude: '\.tmp$|\.part$'
+queue:
+  max_inflight: 1
+  retry_delay: 30s
+  max_attempts: 5

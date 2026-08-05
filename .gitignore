@@ -3,3 +3,6 @@
 *.db.lock
 *.log
 .DS_Store
+
+docs/
+examples/

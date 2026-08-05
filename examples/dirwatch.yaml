@@ -4,6 +4,11 @@ scan_interval: 2s
 inactive: 3s
 include: '\.csv$|\.jpg$|\.mp4$'
 exclude: '\.tmp$|\.part$'
+queue:
+  # Keep one deterministic Agent pipeline running at a time.
+  max_inflight: 1
+  retry_delay: 30s
+  max_attempts: 5
 
 # Optional. If omitted, XDG_STATE_HOME or ~/.local/state is used.
 # checkpoint: /var/lib/dirwatch-cli/state.db

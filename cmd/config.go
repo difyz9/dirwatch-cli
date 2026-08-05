@@ -13,12 +13,12 @@ import (
 )
 
 type options struct {
-	action, eventID, stateStatus, execCommand  string
-	initForce                                  bool
-	configPath, watchDir, archiveDir           string
-	checkpoint, includeSource, excludeSource   string
-	scanInterval, inactive, lease, waitTimeout time.Duration
-	maxFiles                                   int
+	action, eventID, stateStatus, execCommand, retryReason string
+	initForce                                              bool
+	configPath, watchDir, archiveDir                       string
+	checkpoint, includeSource, excludeSource               string
+	scanInterval, inactive, lease, waitTimeout, retryDelay time.Duration
+	maxFiles, maxInflight, maxAttempts                     int
 }
 
 type yamlConfig struct {
@@ -29,6 +29,11 @@ type yamlConfig struct {
 	Checkpoint   *string `yaml:"checkpoint"`
 	Include      *string `yaml:"include"`
 	Exclude      *string `yaml:"exclude"`
+	Queue        *struct {
+		MaxInflight *int    `yaml:"max_inflight"`
+		RetryDelay  *string `yaml:"retry_delay"`
+		MaxAttempts *int    `yaml:"max_attempts"`
+	} `yaml:"queue"`
 }
 
 func defaultConfigPath() (string, error) {
@@ -100,6 +105,20 @@ func loadYAML(path string, required bool, o *options) error {
 			return fmt.Errorf("config inactive: %w", err)
 		}
 	}
+	if cfg.Queue != nil {
+		if cfg.Queue.MaxInflight != nil {
+			o.maxInflight = *cfg.Queue.MaxInflight
+		}
+		if cfg.Queue.MaxAttempts != nil {
+			o.maxAttempts = *cfg.Queue.MaxAttempts
+		}
+		if cfg.Queue.RetryDelay != nil {
+			o.retryDelay, err = time.ParseDuration(*cfg.Queue.RetryDelay)
+			if err != nil {
+				return fmt.Errorf("config queue.retry_delay: %w", err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -110,6 +129,10 @@ scan_interval: 2s
 inactive: 3s
 include: '\.csv$|\.jpg$|\.mp4$'
 exclude: '\.tmp$|\.part$'
+queue:
+  max_inflight: 1
+  retry_delay: 30s
+  max_attempts: 5
 `
 
 func writeInitialConfig(path string, force bool) error {

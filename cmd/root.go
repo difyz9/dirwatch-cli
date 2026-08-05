@@ -34,6 +34,9 @@ func Execute() {
 		if errors.Is(err, errWaitTimeout) {
 			os.Exit(2)
 		}
+		if errors.Is(err, checkpoint.ErrQueueBusy) {
+			os.Exit(3)
+		}
 		fmt.Fprintln(os.Stderr, "dirwatch-cli:", err)
 		os.Exit(1)
 	}
@@ -50,7 +53,7 @@ func initialOptions(args []string) (options, error) {
 	}
 	o := options{watchDir: "/data/incoming", scanInterval: 2 * time.Second, inactive: 3 * time.Second,
 		checkpoint: statePath, includeSource: `\.csv$|\.jpg$|\.mp4$`, excludeSource: `\.tmp$|\.part$`,
-		lease: 5 * time.Minute, maxFiles: 1}
+		lease: 5 * time.Minute, maxFiles: 1, maxInflight: 1, retryDelay: 30 * time.Second, maxAttempts: 5}
 	var explicit bool
 	o.configPath, explicit, err = configArgument(args, configPath)
 	if err != nil {
@@ -88,6 +91,17 @@ func newRoot(args []string, stderr io.Writer) (*cobra.Command, *options, error) 
 	nextCommand.Flags().StringVar(&o.execCommand, "exec", "", "run a shell command with DIRWATCH_* variables and auto-confirm")
 	doneCommand := eventCommand("done EVENT_ID", []string{"ack"}, "Acknowledge and archive a claimed event", "done", o)
 	retryCommand := eventCommand("retry EVENT_ID", []string{"nack"}, "Release an event for immediate redelivery", "retry", o)
+	retryCommand.Short = "Release an event for delayed redelivery or dead-letter it"
+	retryCommand.Flags().StringVar(&o.retryReason, "reason", "", "failure reason stored with the event")
+	retryCommand.Flags().DurationVar(&o.retryDelay, "delay", o.retryDelay, "override delay before redelivery")
+	queueCommand := &cobra.Command{Use: "queue", Short: "Inspect and manage the durable delivery queue"}
+	queueList := &cobra.Command{Use: "list", Short: "List queue records as JSON", Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, args []string) error { o.action = "state-list"; return validate(o) }}
+	queueList.Flags().StringVar(&o.stateStatus, "status", "", "filter by observing, ready, claimed, acknowledged, or dead")
+	queueStatus := &cobra.Command{Use: "status", Short: "Report queue counts and capacity", Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, args []string) error { o.action = "status"; return validate(o) }}
+	restoreCommand := eventCommand("restore EVENT_ID", nil, "Restore a dead-letter event to the ready queue", "restore", o)
+	queueCommand.AddCommand(queueList, queueStatus, restoreCommand)
 	statusCommand := &cobra.Command{Use: "status", Short: "Report configuration, directory access, and delivery counts", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error { o.action = "status"; return validate(o) }}
 	stateCommand := &cobra.Command{Use: "state", Short: "Inspect persistent delivery state"}
@@ -95,7 +109,7 @@ func newRoot(args []string, stderr io.Writer) (*cobra.Command, *options, error) 
 		RunE: func(command *cobra.Command, args []string) error { o.action = "state-list"; return validate(o) }}
 	listCommand.Flags().StringVar(&o.stateStatus, "status", "", "filter by observing, ready, claimed, or acknowledged")
 	stateCommand.AddCommand(listCommand)
-	root.AddCommand(initCommand, nextCommand, doneCommand, retryCommand, statusCommand, stateCommand)
+	root.AddCommand(initCommand, nextCommand, doneCommand, retryCommand, statusCommand, stateCommand, queueCommand)
 	flags := root.PersistentFlags()
 	flags.StringVar(&o.configPath, "config", o.configPath, "YAML config path")
 	flags.StringVar(&o.watchDir, "watch", o.watchDir, "directory to monitor")
@@ -105,6 +119,8 @@ func newRoot(args []string, stderr io.Writer) (*cobra.Command, *options, error) 
 	flags.StringVar(&o.checkpoint, "checkpoint", o.checkpoint, "bbolt checkpoint path")
 	flags.StringVar(&o.includeSource, "include", o.includeSource, "include regular expression")
 	flags.StringVar(&o.excludeSource, "exclude", o.excludeSource, "exclude regular expression")
+	flags.IntVar(&o.maxInflight, "max-inflight", o.maxInflight, "maximum claimed events across all workers")
+	flags.IntVar(&o.maxAttempts, "max-attempts", o.maxAttempts, "claims before an event enters dead-letter state")
 	root.SetArgs(args)
 	root.SetOut(stderr)
 	root.SetErr(stderr)
@@ -126,13 +142,16 @@ func validate(o *options) error {
 	if o.watchDir == "" || o.checkpoint == "" || o.scanInterval <= 0 || o.inactive < 0 {
 		return errors.New("invalid watch, checkpoint, scan interval, or inactive setting")
 	}
-	if o.action == "next" && (o.lease <= 0 || o.waitTimeout < 0 || o.maxFiles <= 0) {
+	if o.action == "next" && (o.lease <= 0 || o.waitTimeout < 0 || o.maxFiles <= 0 || o.maxInflight <= 0) {
 		return errors.New("--lease and --max-files must be positive; --timeout cannot be negative")
+	}
+	if o.retryDelay < 0 || o.maxAttempts <= 0 {
+		return errors.New("queue retry delay cannot be negative and max attempts must be positive")
 	}
 	if o.execCommand != "" && o.maxFiles != 1 {
 		return errors.New("--exec requires --max-files=1")
 	}
-	valid := map[string]bool{"": true, model.StatusObserving: true, model.StatusReady: true, model.StatusClaimed: true, model.StatusAcknowledged: true}
+	valid := map[string]bool{"": true, model.StatusObserving: true, model.StatusReady: true, model.StatusClaimed: true, model.StatusAcknowledged: true, model.StatusDead: true}
 	if o.action == "state-list" && !valid[o.stateStatus] {
 		return errors.New("invalid --status")
 	}
@@ -208,9 +227,9 @@ func runAction(ctx context.Context, o options, stdout, stderr io.Writer) error {
 	encoder := json.NewEncoder(stdout)
 	encoder.SetEscapeHTML(false)
 	switch o.action {
-	case "done", "retry":
-		op := map[string]string{"done": "ack", "retry": "nack"}[o.action]
-		item, err := store.UpdateEvent(o.eventID, op, time.Now())
+	case "done", "retry", "restore":
+		op := map[string]string{"done": "ack", "retry": "nack", "restore": "restore"}[o.action]
+		item, err := store.UpdateEvent(o.eventID, op, time.Now(), o.retryDelay, o.maxAttempts, o.retryReason)
 		if err != nil {
 			return err
 		}
@@ -237,7 +256,8 @@ func runAction(ctx context.Context, o options, stdout, stderr io.Writer) error {
 
 func runNext(ctx context.Context, o options, col *collector.Collector, store *checkpoint.Store, encoder *json.Encoder, stderr io.Writer) error {
 	col = collector.New(collector.Options{WatchDir: o.watchDir, ArchiveDir: o.archiveDir, Inactive: o.inactive,
-		Include: mustCompile(o.includeSource), Exclude: mustCompile(o.excludeSource), Lease: o.lease, MaxItems: o.maxFiles}, store)
+		Include: mustCompile(o.includeSource), Exclude: mustCompile(o.excludeSource), Lease: o.lease, MaxItems: o.maxFiles,
+		MaxInflight: o.maxInflight, MaxAttempts: o.maxAttempts}, store)
 	var timeout <-chan time.Time
 	if o.waitTimeout > 0 {
 		timer := time.NewTimer(o.waitTimeout)
@@ -251,7 +271,7 @@ func runNext(ctx context.Context, o options, col *collector.Collector, store *ch
 		}
 		if len(items) > 0 {
 			if o.execCommand != "" {
-				return runExec(ctx, o.execCommand, items[0], col, store, encoder, stderr)
+				return runExec(ctx, o, items[0], col, store, encoder, stderr)
 			}
 			for _, item := range items {
 				if err := encoder.Encode(item); err != nil {
@@ -272,15 +292,15 @@ func runNext(ctx context.Context, o options, col *collector.Collector, store *ch
 
 func mustCompile(pattern string) *regexp.Regexp { r, _ := compile(pattern); return r }
 
-func runExec(ctx context.Context, script string, item model.FileItem, col *collector.Collector, store *checkpoint.Store, encoder *json.Encoder, stderr io.Writer) error {
-	process := exec.CommandContext(ctx, "sh", "-c", script)
+func runExec(ctx context.Context, o options, item model.FileItem, col *collector.Collector, store *checkpoint.Store, encoder *json.Encoder, stderr io.Writer) error {
+	process := exec.CommandContext(ctx, "sh", "-c", o.execCommand)
 	process.Env = append(os.Environ(), "DIRWATCH_EVENT_ID="+item.EventID, "DIRWATCH_FILE_PATH="+item.FilePath, "DIRWATCH_FILE_NAME="+item.FileName)
 	process.Stdout, process.Stderr = stderr, stderr
 	if err := process.Run(); err != nil {
-		_, _ = store.UpdateEvent(item.EventID, "nack", time.Now())
+		_, _ = store.UpdateEvent(item.EventID, "nack", time.Now(), o.retryDelay, o.maxAttempts, err.Error())
 		return fmt.Errorf("exec failed; event released: %w", err)
 	}
-	acked, err := store.UpdateEvent(item.EventID, "ack", time.Now())
+	acked, err := store.UpdateEvent(item.EventID, "ack", time.Now(), 0, 0, "")
 	if err != nil {
 		return err
 	}
@@ -322,11 +342,13 @@ type statusOutput struct {
 	WatchAccessible   bool           `json:"watch_accessible"`
 	ArchiveAccessible bool           `json:"archive_accessible"`
 	States            map[string]int `json:"states"`
+	MaxInflight       int            `json:"max_inflight"`
+	AvailableSlots    int            `json:"available_slots"`
 }
 
 func statusFor(o options, store *checkpoint.Store) statusOutput {
 	result := statusOutput{WatchDir: o.watchDir, ArchiveDir: o.archiveDir, Checkpoint: o.checkpoint,
-		States: map[string]int{model.StatusObserving: 0, model.StatusReady: 0, model.StatusClaimed: 0, model.StatusAcknowledged: 0}}
+		MaxInflight: o.maxInflight, States: map[string]int{model.StatusObserving: 0, model.StatusReady: 0, model.StatusClaimed: 0, model.StatusAcknowledged: 0, model.StatusDead: 0}}
 	if info, err := os.Stat(o.watchDir); err == nil && info.IsDir() {
 		result.WatchAccessible = true
 	}
@@ -339,6 +361,10 @@ func statusFor(o options, store *checkpoint.Store) statusOutput {
 		for _, item := range items {
 			result.States[item.Status]++
 		}
+	}
+	result.AvailableSlots = result.MaxInflight - result.States[model.StatusClaimed]
+	if result.AvailableSlots < 0 {
+		result.AvailableSlots = 0
 	}
 	return result
 }

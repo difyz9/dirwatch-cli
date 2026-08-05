@@ -3,9 +3,12 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"dirwatch-cli/internal/checkpoint"
 )
 
 func TestAliasesAndDefaultStatePath(t *testing.T) {
@@ -31,6 +34,32 @@ func TestAliasesAndDefaultStatePath(t *testing.T) {
 		if opts.checkpoint != filepath.Join(stateHome, "dirwatch-cli", "state.db") {
 			t.Fatalf("checkpoint=%s", opts.checkpoint)
 		}
+	}
+}
+
+func TestNextReturnsBusyWhileClaimIsInflight(t *testing.T) {
+	root := t.TempDir()
+	watch := filepath.Join(root, "in")
+	if err := os.MkdirAll(watch, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := []byte("watch: " + watch + "\nscan_interval: 10ms\ninactive: 0s\ncheckpoint: " + filepath.Join(root, "state.db") + "\ninclude: '\\.csv$'\nexclude: ''\nqueue:\n  max_inflight: 1\n  retry_delay: 1s\n  max_attempts: 3\n")
+	configPath := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(configPath, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(watch, "a.csv"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(watch, "b.csv"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var first bytes.Buffer
+	if err := execute(context.Background(), []string{"next", "--config", configPath, "--timeout", "1s"}, &first, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execute(context.Background(), []string{"next", "--config", configPath, "--timeout", "1s"}, &bytes.Buffer{}, &bytes.Buffer{}); !errors.Is(err, checkpoint.ErrQueueBusy) {
+		t.Fatalf("second next error=%v", err)
 	}
 }
 

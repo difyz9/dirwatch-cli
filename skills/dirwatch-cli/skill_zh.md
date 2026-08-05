@@ -42,7 +42,7 @@ dirwatch-cli init
 dirwatch-cli next --timeout 60s --lease 30m --max-files 1
 ```
 
-解析返回的单行 NDJSON，保存 `event_id` 和 `file_path`。退出码 2 表示超时前没有文件到达，应报告“暂无可用文件”，不要当作工具故障。
+解析返回的单行 NDJSON，保存 `event_id` 和 `file_path`。退出码 2 表示超时前没有文件到达，退出码 3 表示上一条流水线仍在处理；两者都应静默结束，不要针对退出码 3 自行循环。
 
 处理成功后运行：
 
@@ -53,7 +53,7 @@ dirwatch-cli done EVENT_ID
 处理失败或放弃时运行：
 
 ```bash
-dirwatch-cli retry EVENT_ID
+dirwatch-cli retry EVENT_ID --reason '阶段: 简短错误'
 ```
 
 下游处理成功前绝不调用 `done`。使用 `event_id` 作为下游幂等键。租约过期后，同一事件可能使用相同 ID 再次投递。
@@ -79,12 +79,14 @@ dirwatch-cli next --timeout 60s --lease 30m \
 
 ```bash
 dirwatch-cli status
+dirwatch-cli queue status
 ```
 
 只有投递疑似卡住时才检查已领取事件：
 
 ```bash
-dirwatch-cli state list --status claimed
+dirwatch-cli queue list --status claimed
+dirwatch-cli queue list --status dead
 ```
 
 `wait`、`ack`、`nack` 只是 `next`、`done`、`retry` 的兼容别名。不要直接读取或编辑 bbolt 数据库。

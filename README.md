@@ -37,6 +37,18 @@ cp -R skills/dirwatch-cli ~/.codex/skills/dirwatch-cli
 
 Skill 默认引导 Agent 使用 `next → done/retry`，已有确定性处理程序时使用单命令 `next --exec`；只有明确需要持续事件流时才启动 watch。Release 压缩包中也包含该 Skill。
 
+使用 Hermes 定时运行确定性媒体流水线时，参阅 [Hermes no-agent/script 模式学习笔记](docs/hermes-no-agent-script-runner.md)。
+
+需要由 Hermes 定时创建 Agent 会话、加载 Skill 并驱动流水线时，参阅 [Hermes 定时唤醒 Agent 与视频流水线学习笔记](docs/hermes-scheduled-agent-video-pipeline.md)。
+
+关于 FIFO、全局单任务、租约、延迟重试和死信机制的设计依据，参阅 [持久化队列设计](docs/durable-queue-design.md)。
+
+未来需要安全地启用多个 Agent 并行消费时，参阅 [多 Agent 消费设计备忘](docs/multi-agent-consumer-design.md)。该方案目前仅作为后续设计，现版本仍建议使用 `max_inflight: 1`。
+
+需要为 Hermes、Multica 或其他 Agent 定义可移植、可恢复的工作流任务链时，参阅 [Agent 工作流任务链设计教程](docs/agent-workflow-task-chain-guide.md)。
+
+想直接运行一个通过 `echo` 写入 `task.md` 的教学任务链，可使用 [Agent 工作流演示项目](examples/agent-workflow-demo/README.md)。它包含 AGENTS.md、Skill、workflow、runner、manifest，以及 Hermes/Multica 测试步骤。
+
 ## 构建
 
 ```bash
@@ -71,6 +83,10 @@ scan_interval: 2s
 inactive: 3s
 include: '\.csv$|\.jpg$|\.mp4$'
 exclude: '\.tmp$|\.part$'
+queue:
+  max_inflight: 1
+  retry_delay: 30s
+  max_attempts: 5
 ```
 
 配置完成后可直接运行：
@@ -131,13 +147,24 @@ Agent 处理成功后确认；配置了归档目录时，此时才会移动文�
 dirwatch-cli done 'mec...-a13f...'
 ```
 
-处理失败时立即释放，供下一次 `next` 重新领取：
+处理失败时释放到队尾，并在配置的 `retry_delay` 后重新领取；`--reason` 会持久化失败原因：
 
 ```bash
-dirwatch-cli retry 'mec...-a13f...'
+dirwatch-cli retry 'mec...-a13f...' --reason 'subtitle command failed'
 ```
 
-如果 Agent 异常退出且没有 done，租约到期后事件会再次投递，但 `event_id` 保持不变。Agent 应以 `event_id` 作为幂等键，避免极端故障窗口中的重复业务处理。`next --timeout` 超时退出码为 2，其他错误退出码为 1。旧命令 `wait/ack/nack` 分别作为 `next/done/retry` 的兼容别名保留。
+队列默认 `max_inflight: 1`：只要已有事件处于 `claimed`，后续 `next` 就不领取新文件，而以退出码 3 表示“流水线忙碌”。退出码 2 表示等待超时/当前无文件；Hermes 定时任务可将 2 和 3 都视为静默结束。新文件仍会持续进入持久化 `ready` 队列，必须等上一个事件 `done` 或租约过期后才会投递。
+
+事件按 `ready_at` 严格 FIFO 领取，相同时间按路径排序。每次领取增加 `attempt_count`；失败达到 `max_attempts` 后进入 `dead`，避免坏文件永久阻塞队列：
+
+```bash
+dirwatch-cli queue status
+dirwatch-cli queue list --status ready
+dirwatch-cli queue list --status dead
+dirwatch-cli queue restore 'mec...-a13f...'
+```
+
+如果 Agent 异常退出且没有 done，租约到期后事件会再次投递，但 `event_id` 保持不变。Agent 应以 `event_id` 作为幂等键，避免极端故障窗口中的重复业务处理。其他错误退出码为 1。旧命令 `wait/ack/nack` 分别作为 `next/done/retry` 的兼容别名保留。
 
 简单的下游命令可以让 CLI 自动确认或释放。子命令退出码为 0 时自动 done，非 0 时自动 retry；文件信息通过环境变量传递，子命令输出进入 stderr，不污染事件 JSON：
 
@@ -161,6 +188,7 @@ dirwatch-cli status
 - 递归扫描监控目录；动态新增的子目录和文件会在下一轮被发现并输出。
 - include 为空表示全部包含；exclude 为空表示不排除。
 - checkpoint 使用 bbolt 持久化，程序重启不会重复输出未变化的文件。
+- 发现与领取分为两个阶段；领取在单个 bbolt 事务内执行，并发唤醒也受全局 `max_inflight` 约束。
 - 同一 checkpoint 同时只由一个进程打开；`next` 返回并释放数据库后再执行 `done` 或 `retry`。
 - 同一路径被新 inode 替换，或文件大小/mtime 改变，会被视作新版本。
 - 支持 Linux/macOS；Windows 的 inode 退化为 0，但 size/mtime 和路径去重仍然有效。

@@ -51,7 +51,7 @@ Use this by default. Always set a finite timeout and a lease comfortably longer 
 dirwatch-cli next --timeout 60s --lease 30m --max-files 1
 ```
 
-Parse the single NDJSON object. Keep both `event_id` and `file_path`. Exit code 2 means no file arrived before timeout; report “no file available” rather than treating it as a tool failure.
+Parse the single NDJSON object. Keep both `event_id` and `file_path`. Exit code 2 means no file arrived before timeout. Exit code 3 means another claimed pipeline is still running. Treat both as a quiet no-op and do not loop around exit code 3.
 
 After successful processing:
 
@@ -62,7 +62,7 @@ dirwatch-cli done EVENT_ID
 After failed or abandoned processing:
 
 ```bash
-dirwatch-cli retry EVENT_ID
+dirwatch-cli retry EVENT_ID --reason 'stage: concise error'
 ```
 
 Never call `done` before downstream processing succeeds. Use `event_id` as the downstream idempotency key. A lease-expired event can be delivered again with the same ID.
@@ -88,12 +88,14 @@ Start with:
 
 ```bash
 dirwatch-cli status
+dirwatch-cli queue status
 ```
 
 Inspect claimed events only if delivery appears stuck:
 
 ```bash
-dirwatch-cli state list --status claimed
+dirwatch-cli queue list --status claimed
+dirwatch-cli queue list --status dead
 ```
 
 Use `wait`, `ack`, and `nack` only as compatibility aliases for `next`, `done`, and `retry`. Do not inspect or edit the bbolt database directly.
