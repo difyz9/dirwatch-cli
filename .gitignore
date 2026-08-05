@@ -1,11 +1,5 @@
+/dirwatch-cli
+*.db
+*.db.lock
+*.log
 .DS_Store
-*.pyc
-__pycache__/
-
-*.png
-
-*.mp4
-
-output/
-
-dirwatch-cli

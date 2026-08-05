@@ -1,0 +1,9 @@
+watch: /data/incoming
+archive_dir: /data/archive
+scan_interval: 2s
+inactive: 3s
+include: '\.csv$|\.jpg$|\.mp4$'
+exclude: '\.tmp$|\.part$'
+
+# Optional. If omitted, XDG_STATE_HOME or ~/.local/state is used.
+# checkpoint: /var/lib/dirwatch-cli/state.db

@@ -1,0 +1,7 @@
+# Built-in defaults, shown for reference.
+watch: /data/incoming
+archive_dir: ""
+scan_interval: 2s
+inactive: 3s
+include: '\.csv$|\.jpg$|\.mp4$'
+exclude: '\.tmp$|\.part$'
