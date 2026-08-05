@@ -26,10 +26,28 @@ dirwatch/
 
 `internal` 中的实现不能被其他 Go module 直接导入，避免 CLI 内部协议意外成为公共 API。未来确实需要作为 Go 库使用时，再将稳定接口放入 `pkg`。
 
+## Agent Skill
+
+仓库提供精简的 [dirwatch-cli Skill](skills/dirwatch-cli/SKILL.md) 和 [中文 Skill 指南](skills/dirwatch-cli/skill_zh.md)，指导 Agent 安装工具并选择最低心智负担的处理流程。英文主 Skill 会在中文任务中按需加载中文版。安装到 Codex：
+
+```bash
+mkdir -p ~/.codex/skills
+cp -R skills/dirwatch-cli ~/.codex/skills/dirwatch-cli
+```
+
+Skill 默认引导 Agent 使用 `next → done/retry`，已有确定性处理程序时使用单命令 `next --exec`；只有明确需要持续事件流时才启动 watch。Release 压缩包中也包含该 Skill。
+
 ## 构建
 
 ```bash
 go build -o dirwatch-cli .
+```
+
+推送任意 Git tag 会触发 GitHub Actions，构建 Linux、macOS、Windows 的 amd64/arm64 压缩包，生成 SHA256 校验文件并创建 GitHub Release：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
 ## 使用

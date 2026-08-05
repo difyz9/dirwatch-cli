@@ -1,0 +1,92 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build and package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist/package
+          binary="dirwatch-cli"
+          if [ "$GOOS" = "windows" ]; then binary="dirwatch-cli.exe"; fi
+          go build -trimpath \
+            -ldflags="-s -w -X dirwatch-cli/cmd.version=${TAG_NAME}" \
+            -o "dist/package/${binary}" .
+          cp README.md dist/package/
+          cp -R skills dist/package/
+          if [ -f LICENSE ]; then cp LICENSE dist/package/; fi
+          version_safe="${TAG_NAME//\//_}"
+          asset="dirwatch-cli_${version_safe}_${GOOS}_${GOARCH}"
+          if [ "$GOOS" = "windows" ]; then
+            (cd dist/package && zip -r "../${asset}.zip" .)
+          else
+            tar -C dist/package -czf "dist/${asset}.tar.gz" .
+          fi
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: dirwatch-cli-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/dirwatch-cli_*
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dirwatch-cli-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum dirwatch-cli_* > checksums.txt
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: gh release create "$TAG_NAME" dist/* --repo "$REPOSITORY" --generate-notes --verify-tag

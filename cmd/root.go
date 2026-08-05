@@ -22,7 +22,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var errWaitTimeout = errors.New("wait timeout")
+var (
+	errWaitTimeout = errors.New("wait timeout")
+	version        = "dev" // Replaced with -ldflags for tagged releases.
+)
 
 func Execute() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -68,7 +71,7 @@ func newRoot(args []string, stderr io.Writer) (*cobra.Command, *options, error) 
 	}
 	o := &loaded
 	root := &cobra.Command{
-		Use: "dirwatch-cli", Short: "Watch directories and emit metadata for completed files", Version: "dev",
+		Use: "dirwatch-cli", Short: "Watch directories and emit metadata for completed files", Version: version,
 		Args: cobra.NoArgs, SilenceUsage: true, SilenceErrors: true,
 		Example: "  dirwatch-cli\n  dirwatch-cli next --timeout 30s\n  dirwatch-cli --config ~/.config/dirwatch-cli/dirwatch.yaml",
 		RunE:    func(command *cobra.Command, args []string) error { o.action = "watch"; return validate(o) },

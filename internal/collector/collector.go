@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"dirwatch-cli/internal/checkpoint"
@@ -38,13 +37,6 @@ func New(options Options, store *checkpoint.Store) *Collector {
 }
 
 func (c *Collector) SetClock(now func() time.Time) { c.now = now }
-
-func inodeOf(info os.FileInfo) uint64 {
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		return stat.Ino
-	}
-	return 0
-}
 
 func sameVersion(a, b model.CheckpointRecord) bool {
 	return a.Inode == b.Inode && a.Size == b.Size && a.MTime.Equal(b.MTime)
