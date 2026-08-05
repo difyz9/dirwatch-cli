@@ -221,9 +221,84 @@ func TestArchivePreservesRelativeDirectory(t *testing.T) {
 	if _, err := os.Stat(source); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("source still exists: %v", err)
 	}
+	if errs := s.archiveItems(items); len(errs) != 0 {
+		t.Fatalf("idempotent archive retry errors: %v", errs)
+	}
 	// The archive lives below watch but must never be emitted again.
 	now = now.Add(time.Second)
 	if got, err := s.scan(); err != nil || len(got) != 0 {
 		t.Fatalf("archive was rescanned: %v, %v", got, err)
+	}
+}
+
+func TestLeaseRedeliveryKeepsEventID(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	s := newTestScanner(t, dir, 0, &now)
+	s.lease = 5 * time.Second
+	path := filepath.Join(dir, "agent.csv")
+	os.WriteFile(path, []byte("payload"), 0o644)
+	s.scan()
+	now = now.Add(time.Second)
+	first, err := s.scan()
+	if err != nil || len(first) != 1 || first[0].Status != "claimed" || first[0].EventID == "" {
+		t.Fatalf("first claim = %v, %v", first, err)
+	}
+	now = now.Add(4 * time.Second)
+	if got, _ := s.scan(); len(got) != 0 {
+		t.Fatalf("redelivered before lease expiry: %v", got)
+	}
+	now = now.Add(time.Second)
+	second, err := s.scan()
+	if err != nil || len(second) != 1 || second[0].EventID != first[0].EventID {
+		t.Fatalf("redelivery = %v, %v", second, err)
+	}
+}
+
+func TestAckAndNackLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	s := newTestScanner(t, dir, 0, &now)
+	s.lease = time.Minute
+	path := filepath.Join(dir, "job.csv")
+	os.WriteFile(path, []byte("job"), 0o644)
+	s.scan()
+	now = now.Add(time.Second)
+	claimed, _ := s.scan()
+	if len(claimed) != 1 {
+		t.Fatalf("claimed = %v", claimed)
+	}
+	if _, err := updateEvent(s.db, claimed[0].EventID, "nack", now); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, _ := s.scan()
+	if len(reclaimed) != 1 || reclaimed[0].EventID != claimed[0].EventID {
+		t.Fatalf("reclaimed = %v", reclaimed)
+	}
+	acked, err := updateEvent(s.db, claimed[0].EventID, "ack", now)
+	if err != nil || acked.Status != "acknowledged" {
+		t.Fatalf("ack = %v, %v", acked, err)
+	}
+	now = now.Add(2 * time.Minute)
+	if got, _ := s.scan(); len(got) != 0 {
+		t.Fatalf("acknowledged event redelivered: %v", got)
+	}
+}
+
+func TestCobraDeliveryCommands(t *testing.T) {
+	cases := []struct {
+		args   []string
+		action string
+	}{
+		{[]string{"wait", "--lease", "10s", "--timeout", "1s", "--max-files", "2"}, "wait"},
+		{[]string{"ack", "event-1"}, "ack"},
+		{[]string{"nack", "event-1"}, "nack"},
+		{[]string{"state", "list", "--status", "claimed"}, "state-list"},
+	}
+	for _, tc := range cases {
+		o, err := parseFlags(tc.args, &bytes.Buffer{})
+		if err != nil || o.action != tc.action {
+			t.Fatalf("%v => action=%q err=%v", tc.args, o.action, err)
+		}
 	}
 }

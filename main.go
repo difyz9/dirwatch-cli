@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -24,11 +26,19 @@ import (
 
 const stateBucket = "spool_state"
 
-var errHelp = errors.New("help requested")
+var (
+	errHelp        = errors.New("help requested")
+	errWaitTimeout = errors.New("wait timeout")
+)
 
 type options struct {
 	action        string
 	initForce     bool
+	lease         time.Duration
+	waitTimeout   time.Duration
+	maxFiles      int
+	eventID       string
+	stateStatus   string
 	configPath    string
 	watchDir      string
 	archiveDir    string
@@ -50,12 +60,16 @@ type yamlConfig struct {
 }
 
 type fileItem struct {
-	FilePath string    `json:"file_path"`
-	FileName string    `json:"file_name"`
-	Size     int64     `json:"size"`
-	MTime    time.Time `json:"mtime"`
-	Inode    uint64    `json:"inode"`
-	Ext      string    `json:"ext"`
+	EventID  string     `json:"event_id"`
+	Event    string     `json:"event"`
+	Status   string     `json:"status"`
+	LeaseEnd *time.Time `json:"lease_until,omitempty"`
+	FilePath string     `json:"file_path"`
+	FileName string     `json:"file_name"`
+	Size     int64      `json:"size"`
+	MTime    time.Time  `json:"mtime"`
+	Inode    uint64     `json:"inode"`
+	Ext      string     `json:"ext"`
 }
 
 // checkpointRecord stores only metadata. The watched file is never opened.
@@ -65,6 +79,10 @@ type checkpointRecord struct {
 	MTime       time.Time `json:"mtime"`
 	StableSince time.Time `json:"stable_since"`
 	Emitted     bool      `json:"emitted"`
+	EventID     string    `json:"event_id,omitempty"`
+	Status      string    `json:"status,omitempty"`
+	LeaseUntil  time.Time `json:"lease_until,omitempty"`
+	AckedAt     time.Time `json:"acknowledged_at,omitempty"`
 }
 
 type scanner struct {
@@ -75,6 +93,22 @@ type scanner struct {
 	exclude  *regexp.Regexp
 	db       *bolt.DB
 	now      func() time.Time
+	lease    time.Duration
+}
+
+func newEventID(now time.Time) (string, error) {
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return strconv.FormatInt(now.UnixMilli(), 36) + "-" + fmt.Sprintf("%x", random[:]), nil
+}
+
+func optionalTime(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	return &value
 }
 
 func defaultConfigPath() (string, error) {
@@ -152,6 +186,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	o := options{
 		watchDir: "/data/incoming", scanInterval: 2 * time.Second, inactive: 3 * time.Second,
 		checkpoint: "./dirwatch.db", includeSource: `\.csv$|\.jpg$|\.mp4$`, excludeSource: `\.tmp$|\.part$`,
+		lease: 5 * time.Minute, maxFiles: 1,
 	}
 	configPath, explicitConfig, err := configArgument(args, defaultPath)
 	if err != nil {
@@ -204,11 +239,53 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 		},
 	}
 	initCmd.Flags().BoolVarP(&o.initForce, "force", "f", false, "overwrite an existing configuration")
-	cmd.AddCommand(initCmd)
+	waitCmd := &cobra.Command{
+		Use:   "wait",
+		Short: "Wait for ready files, claim them, then exit",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, positional []string) {
+			executed = true
+			o.action = "wait"
+		},
+	}
+	waitCmd.Flags().DurationVar(&o.lease, "lease", o.lease, "claim lease before an unacknowledged event can be redelivered")
+	waitCmd.Flags().DurationVar(&o.waitTimeout, "timeout", 0, "maximum wait time; zero waits indefinitely")
+	waitCmd.Flags().IntVar(&o.maxFiles, "max-files", o.maxFiles, "maximum number of files to claim")
+	ackCmd := &cobra.Command{
+		Use:   "ack EVENT_ID",
+		Short: "Acknowledge a claimed event and archive its file",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, positional []string) {
+			executed = true
+			o.action, o.eventID = "ack", positional[0]
+		},
+	}
+	nackCmd := &cobra.Command{
+		Use:   "nack EVENT_ID",
+		Short: "Release a claimed event for immediate redelivery",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, positional []string) {
+			executed = true
+			o.action, o.eventID = "nack", positional[0]
+		},
+	}
+	stateCmd := &cobra.Command{Use: "state", Short: "Inspect persistent delivery state"}
+	stateListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List checkpoint records as JSON",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, positional []string) {
+			executed = true
+			o.action = "state-list"
+		},
+	}
+	stateListCmd.Flags().StringVar(&o.stateStatus, "status", "", "filter by observing, ready, claimed, or acknowledged")
+	stateCmd.AddCommand(stateListCmd)
+	cmd.AddCommand(initCmd, waitCmd, ackCmd, nackCmd, stateCmd)
 	cmd.SetOut(stderr)
 	cmd.SetErr(stderr)
 	cmd.SetArgs(args)
-	flags := cmd.Flags()
+	flags := cmd.PersistentFlags()
 	flags.StringVar(&o.configPath, "config", o.configPath, "YAML config path")
 	flags.StringVar(&o.watchDir, "watch", o.watchDir, "directory to monitor")
 	flags.StringVar(&o.archiveDir, "archive-dir", o.archiveDir, "move emitted files here, preserving subdirectories")
@@ -222,6 +299,17 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	}
 	if !executed {
 		return o, errHelp
+	}
+	if o.action != "init" {
+		if o.scanInterval <= 0 || o.inactive < 0 || o.watchDir == "" || o.checkpoint == "" {
+			return o, errors.New("invalid watch, checkpoint, scan interval, or inactive setting")
+		}
+		if o.action == "wait" && (o.lease <= 0 || o.waitTimeout < 0 || o.maxFiles <= 0) {
+			return o, errors.New("--lease and --max-files must be positive; --timeout cannot be negative")
+		}
+		if o.action == "state-list" && o.stateStatus != "" && o.stateStatus != "observing" && o.stateStatus != "ready" && o.stateStatus != "claimed" && o.stateStatus != "acknowledged" {
+			return o, errors.New("--status must be observing, ready, claimed, or acknowledged")
+		}
 	}
 	return o, nil
 }
@@ -367,15 +455,35 @@ func (s *scanner) scan() ([]fileItem, error) {
 			}
 			if !found || !sameVersion(current, previous) {
 				current.StableSince = now
+				current.Status = "observing"
 				if err := putRecord(tx, fullPath, current); err != nil {
 					return err
 				}
 				return nil
 			}
-			if previous.Emitted || now.Sub(previous.StableSince) < s.inactive {
+			if previous.Emitted {
+				// Old records without a status were emitted by pre-lease versions.
+				if previous.Status != "claimed" || now.Before(previous.LeaseUntil) {
+					return nil
+				}
+			} else if now.Sub(previous.StableSince) < s.inactive {
 				return nil
 			}
+			if previous.EventID == "" {
+				previous.EventID, getErr = newEventID(now)
+				if getErr != nil {
+					return getErr
+				}
+			}
+			if s.lease > 0 {
+				previous.Status = "claimed"
+				previous.LeaseUntil = now.Add(s.lease)
+			} else {
+				previous.Status = "acknowledged"
+				previous.AckedAt = now
+			}
 			items = append(items, fileItem{
+				EventID: previous.EventID, Event: "file_ready", Status: previous.Status, LeaseEnd: optionalTime(previous.LeaseUntil),
 				FilePath: fullPath, FileName: entry.Name(), Size: info.Size(),
 				MTime: info.ModTime(), Inode: current.Inode, Ext: filepath.Ext(entry.Name()),
 			})
@@ -393,6 +501,13 @@ func (s *scanner) scan() ([]fileItem, error) {
 		cursor := bucket.Cursor()
 		for key, _ := cursor.First(); key != nil; key, _ = cursor.Next() {
 			if _, ok := seen[string(key)]; !ok {
+				record, _, recordErr := getRecord(tx, string(key))
+				if recordErr != nil {
+					return recordErr
+				}
+				if record.Status == "claimed" {
+					continue
+				}
 				if err := cursor.Delete(); err != nil {
 					return err
 				}
@@ -416,7 +531,14 @@ func (s *scanner) archiveItems(items []fileItem) []error {
 			continue
 		}
 		destination := filepath.Join(s.archive, rel)
-		if _, err := os.Lstat(destination); err == nil {
+		if destinationInfo, err := os.Lstat(destination); err == nil {
+			_, sourceErr := os.Lstat(item.FilePath)
+			if errors.Is(sourceErr, os.ErrNotExist) && destinationInfo.Mode().IsRegular() &&
+				destinationInfo.Size() == item.Size && destinationInfo.ModTime().Equal(item.MTime) &&
+				(item.Inode == 0 || inodeOf(destinationInfo) == item.Inode) {
+				// A previous ack moved the same file but stopped before reporting success.
+				continue
+			}
 			errs = append(errs, fmt.Errorf("archive %q: destination already exists: %s", item.FilePath, destination))
 			continue
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -432,6 +554,91 @@ func (s *scanner) archiveItems(items []fileItem) []error {
 		}
 	}
 	return errs
+}
+
+type stateItem struct {
+	FilePath string `json:"file_path"`
+	checkpointRecord
+}
+
+func recordItem(path string, record checkpointRecord) fileItem {
+	return fileItem{
+		EventID: record.EventID, Event: "file_ready", Status: record.Status, LeaseEnd: optionalTime(record.LeaseUntil),
+		FilePath: path, FileName: filepath.Base(path), Size: record.Size, MTime: record.MTime,
+		Inode: record.Inode, Ext: filepath.Ext(path),
+	}
+}
+
+func updateEvent(db *bolt.DB, eventID, action string, now time.Time) (fileItem, error) {
+	var item fileItem
+	found := false
+	err := db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(stateBucket))
+		return bucket.ForEach(func(key, value []byte) error {
+			if found {
+				return nil
+			}
+			var record checkpointRecord
+			if err := json.Unmarshal(value, &record); err != nil {
+				return err
+			}
+			if record.EventID != eventID {
+				return nil
+			}
+			found = true
+			switch action {
+			case "ack":
+				if record.Status != "claimed" && record.Status != "acknowledged" {
+					return fmt.Errorf("event %s is %s, not claimed", eventID, record.Status)
+				}
+				record.Status, record.AckedAt, record.LeaseUntil = "acknowledged", now, time.Time{}
+			case "nack":
+				if record.Status != "claimed" {
+					return fmt.Errorf("event %s is %s, not claimed", eventID, record.Status)
+				}
+				record.Emitted, record.Status, record.LeaseUntil = false, "ready", time.Time{}
+			default:
+				return fmt.Errorf("unknown event action %q", action)
+			}
+			item = recordItem(string(key), record)
+			return putRecord(tx, string(key), record)
+		})
+	})
+	if err != nil {
+		return item, err
+	}
+	if !found {
+		return item, fmt.Errorf("event not found: %s", eventID)
+	}
+	return item, nil
+}
+
+func listState(db *bolt.DB, status string) ([]stateItem, error) {
+	items := make([]stateItem, 0)
+	err := db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(stateBucket)).ForEach(func(key, value []byte) error {
+			var record checkpointRecord
+			if err := json.Unmarshal(value, &record); err != nil {
+				return err
+			}
+			effective := record.Status
+			if effective == "" {
+				if record.Emitted {
+					effective = "acknowledged"
+				} else {
+					effective = "observing"
+				}
+			}
+			if status != "" && effective != status {
+				return nil
+			}
+			record.Status = effective
+			items = append(items, stateItem{FilePath: string(key), checkpointRecord: record})
+			return nil
+		})
+	})
+	sort.Slice(items, func(i, j int) bool { return items[i].FilePath < items[j].FilePath })
+	return items, err
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -454,12 +661,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("invalid --exclude regex: %w", err)
 	}
-	info, err := os.Stat(o.watchDir)
-	if err != nil {
-		return fmt.Errorf("watch directory: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("watch path is not a directory: %s", o.watchDir)
+	if o.action == "watch" || o.action == "wait" {
+		info, statErr := os.Stat(o.watchDir)
+		if statErr != nil {
+			return fmt.Errorf("watch directory: %w", statErr)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("watch path is not a directory: %s", o.watchDir)
+		}
 	}
 	watchAbs, err := filepath.Abs(o.watchDir)
 	if err != nil {
@@ -483,10 +692,68 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	defer db.Close()
 
 	logger := log.New(stderr, "", log.LstdFlags)
-	logger.Printf("dirwatch-cli start watch=%s scan=%s inactive=%s os=%s", o.watchDir, o.scanInterval, o.inactive, runtime.GOOS)
 	s := scanner{dir: o.watchDir, archive: o.archiveDir, inactive: o.inactive, include: include, exclude: exclude, db: db, now: time.Now}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetEscapeHTML(false)
+
+	switch o.action {
+	case "ack", "nack":
+		item, updateErr := updateEvent(db, o.eventID, o.action, time.Now())
+		if updateErr != nil {
+			return updateErr
+		}
+		if o.action == "ack" {
+			if archiveErrs := s.archiveItems([]fileItem{item}); len(archiveErrs) > 0 {
+				return archiveErrs[0]
+			}
+		}
+		return encoder.Encode(item)
+	case "state-list":
+		items, listErr := listState(db, o.stateStatus)
+		if listErr != nil {
+			return listErr
+		}
+		return encoder.Encode(items)
+	case "wait":
+		s.lease = o.lease
+		var timeout <-chan time.Time
+		var timer *time.Timer
+		if o.waitTimeout > 0 {
+			timer = time.NewTimer(o.waitTimeout)
+			defer timer.Stop()
+			timeout = timer.C
+		}
+		for {
+			items, scanErr := s.scan()
+			if scanErr != nil {
+				return scanErr
+			}
+			if len(items) > o.maxFiles {
+				// scan claims in path order; release claims beyond the requested batch.
+				for _, extra := range items[o.maxFiles:] {
+					_, _ = updateEvent(db, extra.EventID, "nack", time.Now())
+				}
+				items = items[:o.maxFiles]
+			}
+			if len(items) > 0 {
+				for _, item := range items {
+					if err := encoder.Encode(item); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timeout:
+				return errWaitTimeout
+			case <-time.After(o.scanInterval):
+			}
+		}
+	}
+
+	logger.Printf("dirwatch-cli start watch=%s scan=%s inactive=%s os=%s", o.watchDir, o.scanInterval, o.inactive, runtime.GOOS)
 
 	// Scan immediately, then poll. Polling is authoritative and works on NFS.
 	scan := func() {
@@ -525,6 +792,9 @@ func main() {
 	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		if errors.Is(err, errHelp) {
 			return
+		}
+		if errors.Is(err, errWaitTimeout) {
+			os.Exit(2)
 		}
 		fmt.Fprintln(os.Stderr, "dirwatch-cli:", err)
 		os.Exit(1)
