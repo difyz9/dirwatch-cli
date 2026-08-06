@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
-	"dirwatch-cli/internal/checkpoint"
-	"dirwatch-cli/internal/collector"
-	"dirwatch-cli/internal/model"
+	"github.com/difyz9/dmon-cli/internal/checkpoint"
+	"github.com/difyz9/dmon-cli/internal/collector"
+	"github.com/difyz9/dmon-cli/internal/model"
 	"github.com/spf13/cobra"
 )
 
@@ -37,7 +37,7 @@ func Execute() {
 		if errors.Is(err, checkpoint.ErrQueueBusy) {
 			os.Exit(3)
 		}
-		fmt.Fprintln(os.Stderr, "dirwatch-cli:", err)
+		fmt.Fprintln(os.Stderr, "dmon:", err)
 		os.Exit(1)
 	}
 }
@@ -74,9 +74,9 @@ func newRoot(args []string, stderr io.Writer) (*cobra.Command, *options, error) 
 	}
 	o := &loaded
 	root := &cobra.Command{
-		Use: "dirwatch-cli", Short: "Watch directories and emit metadata for completed files", Version: version,
+		Use: "dmon", Short: "Watch directories and emit metadata for completed files", Version: version,
 		Args: cobra.NoArgs, SilenceUsage: true, SilenceErrors: true,
-		Example: "  dirwatch-cli\n  dirwatch-cli next --timeout 30s\n  dirwatch-cli --config ~/.config/dirwatch-cli/dirwatch.yaml",
+		Example: "  dmon\n  dmon next --timeout 30s\n  dmon --config ~/.config/dmon/dmon.yaml",
 		RunE:    func(command *cobra.Command, args []string) error { o.action = "watch"; return validate(o) },
 	}
 	root.CompletionOptions.DisableDefaultCmd = true
@@ -312,7 +312,7 @@ func runExec(ctx context.Context, o options, item model.FileItem, col *collector
 
 func runWatch(ctx context.Context, o options, col *collector.Collector, encoder *json.Encoder, stderr io.Writer) error {
 	logger := log.New(stderr, "", log.LstdFlags)
-	logger.Printf("dirwatch-cli start watch=%s scan=%s inactive=%s os=%s", o.watchDir, o.scanInterval, o.inactive, runtime.GOOS)
+	logger.Printf("dmon start watch=%s scan=%s inactive=%s os=%s", o.watchDir, o.scanInterval, o.inactive, runtime.GOOS)
 	for {
 		items, err := col.Scan()
 		if err != nil {

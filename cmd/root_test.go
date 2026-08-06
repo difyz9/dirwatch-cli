@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"dirwatch-cli/internal/checkpoint"
+	"github.com/difyz9/dmon-cli/internal/checkpoint"
 )
 
 func TestAliasesAndDefaultStatePath(t *testing.T) {
@@ -31,7 +31,7 @@ func TestAliasesAndDefaultStatePath(t *testing.T) {
 		if opts.action != test.action {
 			t.Fatalf("%v action=%s", test.args, opts.action)
 		}
-		if opts.checkpoint != filepath.Join(stateHome, "dirwatch-cli", "state.db") {
+		if opts.checkpoint != filepath.Join(stateHome, "dmon", "state.db") {
 			t.Fatalf("checkpoint=%s", opts.checkpoint)
 		}
 	}

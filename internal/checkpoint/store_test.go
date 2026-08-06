@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"dirwatch-cli/internal/model"
+	"github.com/difyz9/dmon-cli/internal/model"
 )
 
 func TestAckNackLifecycle(t *testing.T) {

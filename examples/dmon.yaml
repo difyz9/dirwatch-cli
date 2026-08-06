@@ -11,4 +11,4 @@ queue:
   max_attempts: 5
 
 # Optional. If omitted, XDG_STATE_HOME or ~/.local/state is used.
-# checkpoint: /var/lib/dirwatch-cli/state.db
+# checkpoint: /var/lib/dmon/state.db

@@ -9,7 +9,7 @@ import (
 	"sort"
 	"time"
 
-	"dirwatch-cli/internal/model"
+	"github.com/difyz9/dmon-cli/internal/model"
 	bolt "go.etcd.io/bbolt"
 )
 

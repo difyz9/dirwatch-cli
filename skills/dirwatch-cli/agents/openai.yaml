@@ -1,4 +1,0 @@
-interface:
-  display_name: "Dirwatch CLI"
-  short_description: "Install and consume reliable directory file events"
-  default_prompt: "Use $dirwatch-cli to install the tool and reliably process the next completed file."

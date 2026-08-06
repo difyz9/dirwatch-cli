@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"dirwatch-cli/internal/checkpoint"
-	"dirwatch-cli/internal/model"
+	"github.com/difyz9/dmon-cli/internal/checkpoint"
+	"github.com/difyz9/dmon-cli/internal/model"
 )
 
 type Options struct {

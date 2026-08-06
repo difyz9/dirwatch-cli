@@ -38,15 +38,15 @@ type yamlConfig struct {
 
 func defaultConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
-	return filepath.Join(home, ".config", "dirwatch-cli", "dirwatch.yaml"), err
+	return filepath.Join(home, ".config", "dmon", "dmon.yaml"), err
 }
 
 func defaultStatePath() (string, error) {
 	if stateHome := os.Getenv("XDG_STATE_HOME"); stateHome != "" {
-		return filepath.Join(stateHome, "dirwatch-cli", "state.db"), nil
+		return filepath.Join(stateHome, "dmon", "state.db"), nil
 	}
 	home, err := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "dirwatch-cli", "state.db"), err
+	return filepath.Join(home, ".local", "state", "dmon", "state.db"), err
 }
 
 func configArgument(args []string, fallback string) (string, bool, error) {
@@ -122,7 +122,7 @@ func loadYAML(path string, required bool, o *options) error {
 	return nil
 }
 
-const defaultConfig = `# dirwatch-cli configuration
+const defaultConfig = `# dmon configuration
 watch: /data/incoming
 archive_dir: ""
 scan_interval: 2s

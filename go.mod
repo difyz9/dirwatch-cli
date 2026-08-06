@@ -1,4 +1,4 @@
-module dirwatch-cli
+module github.com/difyz9/dmon-cli
 
 go 1.22
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dmon CLI"
+  short_description: "Install and consume reliable directory file events"
+  default_prompt: "Use $dmon to install the tool and reliably process the next completed file."

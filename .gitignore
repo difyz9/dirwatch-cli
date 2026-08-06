@@ -1,4 +1,4 @@
-/dirwatch-cli
+/dmon
 *.db
 *.db.lock
 *.log

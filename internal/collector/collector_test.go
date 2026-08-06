@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"dirwatch-cli/internal/checkpoint"
+	"github.com/difyz9/dmon-cli/internal/checkpoint"
 )
 
 func TestStableLeaseAndRedelivery(t *testing.T) {
