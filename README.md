@@ -63,7 +63,7 @@ curl -fsSL https://raw.githubusercontent.com/difyz9/dmon-cli/main/scripts/instal
 go build -o dmon .
 ```
 
-推送任意 Git tag 会触发 GitHub Actions，构建 Linux、macOS、Windows 的 amd64/arm64 压缩包，生成 SHA256 校验文件并创建 GitHub Release：
+推送任意 Git tag 会触发 GitHub Actions，由 [GoReleaser](https://goreleaser.com)（配置见 `.goreleaser.yml`）构建 Linux、macOS、Windows 的 amd64/arm64 压缩包，生成 SHA256 校验文件并自动创建 GitHub Release：
 
 ```bash
 git tag v0.1.0

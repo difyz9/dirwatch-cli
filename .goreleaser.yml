@@ -1,0 +1,48 @@
+# GoReleaser v2 configuration.
+# Run locally: goreleaser release --snapshot --clean
+# Release: triggered by the GitHub Action on a v* tag push.
+version: 2
+
+project_name: dmon
+
+builds:
+  - id: dmon
+    main: .
+    binary: dmon
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      # {{ .Tag }} keeps the full tag string (e.g. v0.0.2) so `dmon --version`
+      # matches what the GitHub Action previously injected via ${TAG_NAME}.
+      - -s -w -X github.com/difyz9/dmon-cli/cmd.version={{ .Tag }}
+
+archives:
+  - id: default
+    name_template: "dmon_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    # Keep files at the archive root (no wrapping directory) so the installer
+    # script can extract ./dmon directly, matching the previous manual CI output.
+    wrap_in_directory: false
+    files:
+      - README.md
+      - "skills/**/*"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
