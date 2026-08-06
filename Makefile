@@ -11,10 +11,11 @@
 #   make uninstall      从 GOBIN 移除
 #   make clean          清理构建产物
 #
-# 版本号：默认 dev；发布时传入 tag，例如 make build VERSION=v0.1.0
+# 版本号：默认从 git 自动获取（最近 tag、提交距离、dirty 标记，见 VERSION 定义）；
+#        无法获取时回退 dev，也可手动指定，例如 make build VERSION=v1.0.0
 
 BINARY  := dmon
-VERSION ?= dev
+VERSION ?= $(shell git describe --tags --dirty --always 2>/dev/null || echo dev)
 PKG     := github.com/difyz9/dmon-cli/cmd
 LDFLAGS := -s -w -X $(PKG).version=$(VERSION)
 

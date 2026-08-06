@@ -13,15 +13,19 @@ For Chinese-language tasks, read [skill_zh.md](skill_zh.md) and follow that loca
 
 1. Run `command -v dmon`.
 2. If working inside this repository and the binary is absent, run `go build -o ./dmon .` and use the absolute path to that binary.
-3. Otherwise, if Go is installed, run:
+3. Otherwise, run the official installer, which downloads the latest release for your OS and architecture (no Go required):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/difyz9/dmon-cli/main/scripts/install.sh | bash
+```
+
+4. If Go is installed, you may also run:
 
 ```bash
 go install github.com/difyz9/dmon-cli@latest
 ```
 
-Resolve the installed binary with `go env GOBIN`; when empty, use `$(go env GOPATH)/bin/dmon`. Do not modify system directories merely to put it on `PATH`.
-
-If the resolved binary is not on `PATH`, substitute its absolute path for `dmon` in every command below.
+After installing, confirm `dmon` is on `PATH` with `command -v dmon`. The installer puts it in `~/.local/bin`; `go install` puts it in `go env GOBIN`. Do not modify system directories merely to put it on `PATH`. If the binary is not on `PATH`, substitute its absolute path for `dmon` in every command below.
 
 Verify installation once:
 

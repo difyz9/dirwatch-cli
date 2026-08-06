@@ -1,5 +1,6 @@
-# Built-in defaults, shown for reference.
-watch: /data/incoming
+# Built-in defaults, shown for reference. init writes the absolute path
+# (e.g. /Users/<name>/Downloads/dmon) and creates the directory.
+watch: ~/Downloads/dmon
 archive_dir: ""
 scan_interval: 2s
 inactive: 3s

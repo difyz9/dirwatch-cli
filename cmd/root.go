@@ -51,7 +51,7 @@ func initialOptions(args []string) (options, error) {
 	if err != nil {
 		return options{}, err
 	}
-	o := options{watchDir: "/data/incoming", scanInterval: 2 * time.Second, inactive: 3 * time.Second,
+	o := options{watchDir: defaultWatchDir(), scanInterval: 2 * time.Second, inactive: 3 * time.Second,
 		checkpoint: statePath, includeSource: `\.csv$|\.jpg$|\.mp4$`, excludeSource: `\.tmp$|\.part$`,
 		lease: 5 * time.Minute, maxFiles: 1, maxInflight: 1, retryDelay: 30 * time.Second, maxAttempts: 5}
 	var explicit bool

@@ -1,5 +1,5 @@
-watch: /data/incoming
-archive_dir: /data/archive
+watch: ~/Downloads/dmon
+archive_dir: ~/Downloads/dmon-archive
 scan_interval: 2s
 inactive: 3s
 include: '\.csv$|\.jpg$|\.mp4$'

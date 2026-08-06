@@ -37,6 +37,14 @@ cp -R skills/dmon ~/.codex/skills/dmon
 
 Skill 默认引导 Agent 使用 `next → done/retry`，已有确定性处理程序时使用单命令 `next --exec`；只有明确需要持续事件流时才启动 watch。Release 压缩包中也包含该 Skill。
 
+## 让 Agent 一键安装
+
+把 [AGENT_INSTALL.md](AGENT_INSTALL.md) 中的文本复制给任意 Agent（Claude、Codex、Hermes 等），它就会按系统类型从 GitHub Release 下载最新版并安装，无需安装 Go：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/difyz9/dmon-cli/main/scripts/install.sh | bash
+```
+
 使用 Hermes 定时运行确定性媒体流水线时，参阅 [Hermes no-agent/script 模式学习笔记](docs/hermes-no-agent-script-runner.md)。
 
 需要由 Hermes 定时创建 Agent 会话、加载 Skill 并驱动流水线时，参阅 [Hermes 定时唤醒 Agent 与视频流水线学习笔记](docs/hermes-scheduled-agent-video-pipeline.md)。
@@ -74,11 +82,11 @@ dmon init
 
 已有配置默认不会覆盖；需要重新生成时显式执行 `dmon init --force`。
 
-生成的配置内容如下：
+init 会在用户的下载目录下创建 `dmon` 文件夹（如 `~/Downloads/dmon`），并把它的绝对路径写入配置。生成的配置内容如下：
 
 ```yaml
-watch: /data/incoming
-archive_dir: /data/archive
+watch: ~/Downloads/dmon   # init 写入绝对路径，例如 /Users/apple/Downloads/dmon
+archive_dir: ""
 scan_interval: 2s
 inactive: 3s
 include: '\.csv$|\.jpg$|\.mp4$'
@@ -100,10 +108,10 @@ dmon
 ```bash
 ./dmon \
   --config ~/.config/dmon/dmon.yaml \
-  --watch /data/incoming \
+  --watch ~/Downloads/dmon \
   --scan-interval 2s \
   --inactive 3s \
-  --archive-dir /data/archive \
+  --archive-dir ~/Downloads/dmon-archive \
   --include '\.csv$|\.jpg$|\.mp4$' \
   --exclude '\.tmp$|\.part$' \
   --checkpoint ~/.local/state/dmon/state.db
@@ -118,7 +126,7 @@ dmon
 watch 和 next 均使用 NDJSON，每个就绪文件输出一行 JSON：
 
 ```json
-{"event_id":"mec...-a13f...","event":"file_ready","status":"acknowledged","file_path":"/data/incoming/a.csv","file_name":"a.csv","size":1234,"mtime":"2026-08-05T14:20:30+08:00","inode":143211,"ext":".csv"}
+{"event_id":"mec...-a13f...","event":"file_ready","status":"acknowledged","file_path":"/Users/apple/Downloads/dmon/a.csv","file_name":"a.csv","size":1234,"mtime":"2026-08-05T14:20:30+08:00","inode":143211,"ext":".csv"}
 ```
 
 可直接管道给下游：
@@ -138,7 +146,7 @@ dmon next --timeout 30s --lease 5m --max-files 1
 `next` 使用 NDJSON，每行一个事件：
 
 ```json
-{"event_id":"mec...-a13f...","event":"file_ready","status":"claimed","lease_until":"2026-08-05T20:05:00+08:00","file_path":"/data/incoming/a.csv","file_name":"a.csv","size":1234,"mtime":"2026-08-05T19:59:50+08:00","inode":143211,"ext":".csv"}
+{"event_id":"mec...-a13f...","event":"file_ready","status":"claimed","lease_until":"2026-08-05T20:05:00+08:00","file_path":"/Users/apple/Downloads/dmon/a.csv","file_name":"a.csv","size":1234,"mtime":"2026-08-05T19:59:50+08:00","inode":143211,"ext":".csv"}
 ```
 
 Agent 处理成功后确认；配置了归档目录时，此时才会移动文件：

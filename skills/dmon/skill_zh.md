@@ -6,13 +6,19 @@
 
 1. 运行 `command -v dmon`。
 2. 如果当前位于本项目仓库且没有二进制，运行 `go build -o ./dmon .`，后续使用该文件的绝对路径。
-3. 否则，如果已安装 Go，运行：
+3. 否则，运行官方安装脚本（按系统类型下载最新 Release，无需 Go）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/difyz9/dmon-cli/main/scripts/install.sh | bash
+```
+
+4. 若已安装 Go，也可运行：
 
 ```bash
 go install github.com/difyz9/dmon-cli@latest
 ```
 
-通过 `go env GOBIN` 定位二进制；结果为空时使用 `$(go env GOPATH)/bin/dmon`。不要仅为加入 `PATH` 而修改系统目录。如果二进制不在 `PATH`，将下文命令中的 `dmon` 替换为其绝对路径。
+安装后用 `command -v dmon` 确认二进制在 `PATH` 中。安装脚本默认装到 `~/.local/bin`；`go install` 装到 `go env GOBIN`。不要仅为加入 `PATH` 而修改系统目录。如果二进制不在 `PATH`，将下文命令中的 `dmon` 替换为其绝对路径。
 
 只需验证一次安装：
 

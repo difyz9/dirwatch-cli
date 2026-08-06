@@ -122,8 +122,19 @@ func loadYAML(path string, required bool, o *options) error {
 	return nil
 }
 
-const defaultConfig = `# dmon configuration
-watch: /data/incoming
+// defaultWatchDir returns the default watch directory: a dmon folder under the
+// user's Downloads directory. init creates it and writes its absolute path into
+// the generated configuration.
+func defaultWatchDir() string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, "Downloads", "dmon")
+	}
+	// Unreachable on supported systems; keep a sane fallback when $HOME is unset.
+	return filepath.Join(os.TempDir(), "dmon")
+}
+
+const defaultConfigTemplate = `# dmon configuration
+watch: %s
 archive_dir: ""
 scan_interval: 2s
 inactive: 3s
@@ -139,6 +150,10 @@ func writeInitialConfig(path string, force bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
+	watchDir := defaultWatchDir()
+	if err := os.MkdirAll(watchDir, 0o755); err != nil {
+		return fmt.Errorf("create watch directory %q: %w", watchDir, err)
+	}
 	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
 	if force {
 		flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
@@ -150,7 +165,7 @@ func writeInitialConfig(path string, force bool) error {
 		}
 		return fmt.Errorf("create config %q: %w", path, err)
 	}
-	if _, err := io.WriteString(file, defaultConfig); err != nil {
+	if _, err := io.WriteString(file, fmt.Sprintf(defaultConfigTemplate, watchDir)); err != nil {
 		file.Close()
 		return err
 	}
